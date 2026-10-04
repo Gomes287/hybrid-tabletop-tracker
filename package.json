@@ -1,0 +1,12 @@
+{
+  "name": "hybrid-tabletop-tracker",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Experimental tracking system for a hybrid tabletop RPG table",
+  "scripts": {
+    "spike:server": "node spikes/roll20-bridge/server.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}
