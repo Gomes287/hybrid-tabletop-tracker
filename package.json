@@ -4,7 +4,9 @@
   "private": true,
   "description": "Experimental tracking system for a hybrid tabletop RPG table",
   "scripts": {
-    "spike:server": "node spikes/roll20-bridge/server.js"
+    "spike:server": "node spikes/roll20-bridge/server.js",
+    "spike:table-engine": "node spikes/table-engine/server.js",
+    "test": "node --test spikes/table-engine/*.test.js"
   },
   "dependencies": {
     "ws": "^8.18.3"
