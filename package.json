@@ -6,7 +6,8 @@
   "scripts": {
     "spike:server": "node spikes/roll20-bridge/server.js",
     "spike:table-engine": "node spikes/table-engine/server.js",
-    "test": "node --test spikes/table-engine/*.test.js"
+    "spike:table-view": "node spikes/roll20-table-view/server.js",
+    "test": "node --test spikes/table-engine/*.test.js spikes/roll20-table-view/*.test.js"
   },
   "dependencies": {
     "ws": "^8.18.3"
