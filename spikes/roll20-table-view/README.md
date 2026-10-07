@@ -40,15 +40,25 @@ WebSocket API use cells exclusively and never expose Babylon units.
 - `MeshScene` contains `tabletop-square-grid`.
 - `engine.moveCamera(Vector3)` performs native pan and runs Roll20's post-camera
   update path for the map, grid, tokens, and lighting viewport.
-- A 70-unit camera delta moved exactly one square at approximately 0.73 and 0.89
-  zoom, showing that logical world movement is independent of visual zoom.
+- With Roll20 Cell Size set to 70, a 70-unit camera delta moved exactly one
+  configured square at approximately 0.73 and 0.89 zoom.
 
-The tested 25 by 25 square page had grid scaling `1750,-1750`, producing:
+The tested 25 by 25 square page had grid scaling `1750,-1750`, exposing the
+renderer base unit:
 
 ```text
-cellX = abs(1750) / 25 = 70
-cellY = abs(-1750) / 25 = 70
+rendererBaseUnitX = abs(1750) / 25 = 70
+rendererBaseUnitY = abs(-1750) / 25 = 70
 ```
+
+Roll20's base world/grid unit is `70`. The configured square-grid cell size is:
+
+```text
+effectiveCellSize = 70 * page.attributes.snapping_increment
+```
+
+The renderer ratio above is a compatibility check for Jumpgate internals; it is
+not the configured cell-size calculation.
 
 ## Internal interfaces and compatibility guard
 
@@ -65,7 +75,10 @@ Before every pan, the adapter validates:
 - `engine.moveCamera()`;
 - the `tabletop-square-grid` mesh and scaling;
 - square grid type;
-- positive page dimensions and calculated cell sizes.
+- positive page dimensions;
+- a finite, positive numeric `snapping_increment`;
+- renderer base-unit ratios approximately equal to 70;
+- a finite, positive effective configured cell size.
 
 Missing or changed internals produce `ROLL20_TABLE_VIEW_UNSUPPORTED`. A grid
 other than square produces `UNSUPPORTED_GRID_TYPE`. There is deliberately no
@@ -80,9 +93,10 @@ incompatible Roll20 version.
 After the WebSocket connects, the bridge polls readiness every 150 ms for up to
 10 seconds. It checks Campaign, `Campaign.engine`, `moveCamera()`, the active
 page and dimensions, available page loading indicators, MeshScene, square-grid
-mesh/scaling, calculated cell sizes, and the camera transform. Readiness
-requires `engine.page`; `Campaign.activePage()` is only a guarded fallback for
-adapter access after readiness and never bypasses that wait.
+mesh/scaling and type, `snapping_increment`, the renderer base-unit invariant,
+effective cell size, and the camera transform. Readiness requires `engine.page`;
+`Campaign.activePage()` is only a guarded fallback for adapter access after
+readiness and never bypasses that wait.
 
 The bridge logs the waiting message once:
 
@@ -106,12 +120,19 @@ the caller must issue the command again after the ready log.
 
 ## Native pan calculation
 
-For each command, the adapter dynamically calculates:
+The adapter defines the Roll20 base unit centrally as `70`. For each command it
+calculates the configured square-grid cell size from page semantics:
 
 ```text
-cellX = abs(grid.scaling.x) / page.attributes.width
-cellY = abs(grid.scaling.y) / page.attributes.height
+effectiveCellSize = 70 * page.attributes.snapping_increment
+deltaWorldX = dxCells * effectiveCellSize
+deltaWorldY = dyCells * effectiveCellSize
 ```
+
+It separately checks that `abs(grid.scaling.x) / page.width` and
+`abs(grid.scaling.y) / page.height` remain approximately 70. A material mismatch
+means the undocumented Jumpgate geometry is no longer compatible, so the bridge
+fails instead of moving by a potentially incorrect amount.
 
 It obtains a Babylon-compatible vector without relying on a global `BABYLON`:
 
@@ -144,14 +165,15 @@ Success:
   "type": "VIEWPORT_PANNED",
   "dxCells": 1,
   "dyCells": 0,
-  "cellX": 70,
-  "cellY": 70,
-  "cameraPosition": { "x": 70, "y": 0, "z": 0 }
+  "cellX": 80,
+  "cellY": 80,
+  "cameraPosition": { "x": 2635, "y": -1435, "z": 0 }
 }
 ```
 
-`cameraPosition` is optional diagnostic data and is not part of the essential
-public navigation API.
+`cellX` and `cellY` report the effective configured cell size, not the renderer
+base unit. `cameraPosition` is optional diagnostic data and is not part of the
+essential public navigation API.
 
 Controlled failure:
 
@@ -217,6 +239,8 @@ vector clone, and `moveCamera()`. They do not require Roll20 or a browser.
 - [ ] `pan 5 0` moves exactly five horizontal cells.
 - [ ] Each command returns `VIEWPORT_PANNED`.
 - [ ] Pan remains one logical cell at two different zoom levels.
+- [ ] Cell Size 70 reports `cell=70,70` and `pan 1 0` moves 70 world units.
+- [ ] Cell Size 80 reports `cell=80,80` and `pan 1 0` moves 80 world units.
 - [ ] Map, grid, tokens, Fog of War, and Dynamic Lighting remain synchronized.
 - [ ] Master View pan/zoom does not change the Table View camera.
 - [ ] No GM Layer content appears in the Player View.
@@ -273,6 +297,62 @@ An incognito window is suitable during development. A persistent installation
 should use a dedicated browser profile for the Table View instead of depending
 on an incognito window. The validation used the same Roll20 account in both
 isolated sessions; a second Roll20 account was not required.
+
+### Configured cell-size correction
+
+A later real Jumpgate investigation used a 73 by 41 page whose renderer canvas
+remained `5110 x 2870`. With Cell Size 70,
+`snapping_increment` was `1` and one configured cell was 70 world units. After
+changing Cell Size to 80, Roll20 set `snapping_increment` to
+`1.1428571428571428` while preserving the same canvas dimensions:
+
+```text
+63.875 cells * 80 = 5110
+35.875 cells * 80 = 2870
+```
+
+The renderer ratios still resolved to the base unit 70, proving they do not
+represent the configured cell size. From a clean `zoom = 1` state, calling the
+native controller with a `+80` X delta moved `cameraX` exactly from `2555` to
+`2635`. This empirically confirms the `70 * snapping_increment` rule used by the
+corrected adapter.
+
+Arbitrary manual pan/zoom can leave fractional camera positions, and Roll20's
+internal pixel snapping may introduce small corrections. Reconciling that
+observed state with a future logical desired viewport belongs to later work,
+not this narrowly scoped Spike 003 correction.
+
+The corrected command was subsequently validated end-to-end in real Roll20
+Jumpgate at both a non-default and the default configured cell size.
+
+#### Case 1 — configured Cell Size 80
+
+```text
+Bridge cell size: 80,80
+snapping_increment: 1.1428571428571428
+zoom: 1
+cameraX before `pan 1 0`: 2635
+cameraX after `pan 1 0`: 2715
+observed delta: +80
+result: PASS
+```
+
+#### Case 2 — configured Cell Size 70 regression
+
+```text
+Bridge cell size: 70,70
+snapping_increment: 1
+zoom: 1
+cameraX before `pan 1 0`: 2555
+cameraX after `pan 1 0`: 2625
+observed delta: +70
+result: PASS
+```
+
+The SPIKE 003 cell-based viewport contract is now validated end-to-end for
+square grids with both the default and a non-default configured cell size: one
+requested cell produces one currently configured Roll20 square-grid cell of
+native camera movement.
 
 ## Risks and exclusions
 

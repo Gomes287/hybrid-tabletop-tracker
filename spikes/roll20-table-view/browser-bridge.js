@@ -16,6 +16,8 @@
   const RECONNECT_DELAY_MS = 2000;
   const READINESS_POLL_INTERVAL_MS = 150;
   const READINESS_TIMEOUT_MS = 10000;
+  const ROLL20_BASE_UNIT = 70;
+  const ROLL20_BASE_UNIT_TOLERANCE = 0.01;
 
   class TableViewError extends Error {
     constructor(code, detail) {
@@ -28,6 +30,62 @@
 
   function unsupported(detail) {
     throw new TableViewError('ROLL20_TABLE_VIEW_UNSUPPORTED', detail);
+  }
+
+  function getSquareGridMetrics(page, grid) {
+    if (!page || !page.attributes) {
+      unsupported('the active page attributes are not available');
+    }
+    if (page.attributes.grid_type !== 'square') {
+      throw new TableViewError(
+        'UNSUPPORTED_GRID_TYPE',
+        `expected square, received ${String(page.attributes.grid_type)}`,
+      );
+    }
+
+    const width = Number(page.attributes.width);
+    const height = Number(page.attributes.height);
+    if (!Number.isFinite(width) || width <= 0) {
+      unsupported('active page width must be finite and greater than zero');
+    }
+    if (!Number.isFinite(height) || height <= 0) {
+      unsupported('active page height must be finite and greater than zero');
+    }
+
+    const snappingIncrement = page.attributes.snapping_increment;
+    if (!Number.isFinite(snappingIncrement) || snappingIncrement <= 0) {
+      unsupported('snapping_increment must be a finite number greater than zero');
+    }
+
+    if (!grid || !grid.scaling) {
+      unsupported('tabletop-square-grid.scaling is not available');
+    }
+    const scalingX = Number(grid.scaling.x);
+    const scalingY = Number(grid.scaling.y);
+    if (!Number.isFinite(scalingX) || !Number.isFinite(scalingY)) {
+      unsupported('tabletop-square-grid scaling must be finite');
+    }
+
+    const rendererBaseUnitX = Math.abs(scalingX) / width;
+    const rendererBaseUnitY = Math.abs(scalingY) / height;
+    if (
+      Math.abs(rendererBaseUnitX - ROLL20_BASE_UNIT) > ROLL20_BASE_UNIT_TOLERANCE ||
+      Math.abs(rendererBaseUnitY - ROLL20_BASE_UNIT) > ROLL20_BASE_UNIT_TOLERANCE
+    ) {
+      unsupported(
+        `Jumpgate renderer base unit mismatch: expected approximately ${ROLL20_BASE_UNIT}, received ${rendererBaseUnitX},${rendererBaseUnitY}`,
+      );
+    }
+
+    const effectiveCellSize = ROLL20_BASE_UNIT * snappingIncrement;
+    if (!Number.isFinite(effectiveCellSize) || effectiveCellSize <= 0) {
+      unsupported('effective square-grid cell size must be finite and greater than zero');
+    }
+
+    return {
+      cellX: effectiveCellSize,
+      cellY: effectiveCellSize,
+    };
   }
 
   function createTableViewAdapter(windowObject) {
@@ -65,37 +123,12 @@
         unsupported('the active page is not available from Campaign.engine');
       }
 
-      if (page.attributes.grid_type !== 'square') {
-        throw new TableViewError(
-          'UNSUPPORTED_GRID_TYPE',
-          `expected square, received ${String(page.attributes.grid_type)}`,
-        );
-      }
-
-      const width = Number(page.attributes.width);
-      const height = Number(page.attributes.height);
-      if (!Number.isFinite(width) || width <= 0) {
-        unsupported('active page width must be finite and greater than zero');
-      }
-      if (!Number.isFinite(height) || height <= 0) {
-        unsupported('active page height must be finite and greater than zero');
-      }
-
       if (typeof windowObject.MeshScene.getMeshByName !== 'function') {
         unsupported('MeshScene.getMeshByName is not a function');
       }
       const grid = windowObject.MeshScene.getMeshByName('tabletop-square-grid');
       if (!grid) unsupported('tabletop-square-grid mesh is not available');
-      if (!grid.scaling) unsupported('tabletop-square-grid.scaling is not available');
-
-      const cellX = Math.abs(Number(grid.scaling.x)) / width;
-      const cellY = Math.abs(Number(grid.scaling.y)) / height;
-      if (!Number.isFinite(cellX) || cellX <= 0) {
-        unsupported('calculated cellX must be finite and greater than zero');
-      }
-      if (!Number.isFinite(cellY) || cellY <= 0) {
-        unsupported('calculated cellY must be finite and greater than zero');
-      }
+      const { cellX, cellY } = getSquareGridMetrics(page, grid);
 
       const position = engine.cameraTransform.position;
       if (!position || typeof position.clone !== 'function') {
@@ -185,27 +218,15 @@
     if (!grid) {
       return { ready: false, detail: 'tabletop-square-grid mesh is not available' };
     }
-    if (!page.attributes) {
-      return { ready: false, detail: 'the active page attributes are not available' };
-    }
-    const width = Number(page.attributes.width);
-    const height = Number(page.attributes.height);
-    if (!Number.isFinite(width) || width <= 0) {
-      return { ready: false, detail: 'the active page width is not ready' };
-    }
-    if (!Number.isFinite(height) || height <= 0) {
-      return { ready: false, detail: 'the active page height is not ready' };
-    }
-    if (!grid.scaling) {
-      return { ready: false, detail: 'tabletop-square-grid scaling is not ready' };
-    }
-    const cellX = Math.abs(Number(grid.scaling.x)) / width;
-    const cellY = Math.abs(Number(grid.scaling.y)) / height;
-    if (!Number.isFinite(cellX) || cellX <= 0) {
-      return { ready: false, detail: 'the horizontal cell size is not ready' };
-    }
-    if (!Number.isFinite(cellY) || cellY <= 0) {
-      return { ready: false, detail: 'the vertical cell size is not ready' };
+    try {
+      getSquareGridMetrics(page, grid);
+    } catch (error) {
+      return {
+        ready: false,
+        detail: error instanceof TableViewError
+          ? error.detail
+          : error.message || String(error),
+      };
     }
     if (
       !engine.cameraTransform ||
@@ -423,6 +444,7 @@
   }
 
   return {
+    ROLL20_BASE_UNIT,
     TableViewError,
     createTableViewAdapter,
     handlePanViewportMessage,

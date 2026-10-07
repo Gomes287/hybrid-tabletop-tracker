@@ -36,6 +36,7 @@ function createRoll20Mock(overrides = {}) {
       width: 25,
       height: 25,
       grid_type: 'square',
+      snapping_increment: 1,
       ...overrides.pageAttributes,
     },
   };
@@ -70,11 +71,55 @@ function assertErrorCode(action, code) {
   );
 }
 
-test('calculates cellX and cellY from grid scaling and page dimensions', () => {
+test('snapping_increment 1 produces an effective 70-unit cell', () => {
   const mock = createRoll20Mock();
   const adapter = createTableViewAdapter(mock.windowObject);
 
   assert.deepEqual(adapter.getMetrics(), { cellX: 70, cellY: 70 });
+});
+
+test('snapping_increment 1.1428571428571428 produces an effective 80-unit cell', () => {
+  const mock = createRoll20Mock({
+    pageAttributes: {
+      width: 73,
+      height: 41,
+      snapping_increment: 1.1428571428571428,
+    },
+    grid: { scaling: { x: 5110, y: -2870 } },
+  });
+  const adapter = createTableViewAdapter(mock.windowObject);
+
+  const metrics = adapter.getMetrics();
+  adapter.panViewport(1, 0);
+
+  assert.ok(Math.abs(metrics.cellX - 80) < 1e-9);
+  assert.ok(Math.abs(metrics.cellY - 80) < 1e-9);
+  assert.ok(Math.abs(mock.deltas[0].x - 80) < 1e-9);
+});
+
+test('snapping_increment 0.5 produces an effective 35-unit cell', () => {
+  const mock = createRoll20Mock({ pageAttributes: { snapping_increment: 0.5 } });
+  const adapter = createTableViewAdapter(mock.windowObject);
+
+  assert.deepEqual(adapter.getMetrics(), { cellX: 35, cellY: 35 });
+  adapter.panViewport(1, 0);
+  assert.equal(mock.deltas[0].x, 35);
+});
+
+test('multi-cell negative movement uses the effective configured cell size', () => {
+  const mock = createRoll20Mock({
+    pageAttributes: {
+      width: 73,
+      height: 41,
+      snapping_increment: 1.1428571428571428,
+    },
+    grid: { scaling: { x: 5110, y: -2870 } },
+  });
+
+  createTableViewAdapter(mock.windowObject).panViewport(4, -3);
+
+  assert.ok(Math.abs(mock.deltas[0].x - 320) < 1e-9);
+  assert.ok(Math.abs(mock.deltas[0].y - -240) < 1e-9);
 });
 
 test('pans one cell horizontally in the positive direction', () => {
@@ -184,6 +229,56 @@ test('rejects invalid page dimensions', () => {
   );
 });
 
+test('rejects invalid snapping_increment values without defaulting', () => {
+  const invalidValues = [
+    undefined,
+    null,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    0,
+    -1,
+    '1',
+  ];
+
+  for (const snappingIncrement of invalidValues) {
+    const mock = createRoll20Mock({
+      pageAttributes: { snapping_increment: snappingIncrement },
+    });
+    assertErrorCode(
+      () => createTableViewAdapter(mock.windowObject).panViewport(1, 0),
+      'ROLL20_TABLE_VIEW_UNSUPPORTED',
+    );
+    assert.equal(inspectTableViewReadiness(mock.windowObject).ready, false);
+  }
+});
+
+test('accepts renderer base units approximately equal to 70', () => {
+  const mock = createRoll20Mock({
+    grid: { scaling: { x: 1750.125, y: -1749.875 } },
+  });
+
+  assert.deepEqual(
+    createTableViewAdapter(mock.windowObject).getMetrics(),
+    { cellX: 70, cellY: 70 },
+  );
+});
+
+test('rejects a material renderer base-unit compatibility mismatch', () => {
+  const mock = createRoll20Mock({
+    grid: { scaling: { x: 1800, y: -1750 } },
+  });
+
+  assertErrorCode(
+    () => createTableViewAdapter(mock.windowObject).panViewport(1, 0),
+    'ROLL20_TABLE_VIEW_UNSUPPORTED',
+  );
+  assert.match(
+    inspectTableViewReadiness(mock.windowObject).detail,
+    /renderer base unit mismatch/,
+  );
+});
+
 test('rejects an invalid PAN_VIEWPORT WebSocket payload', () => {
   assert.equal(isPanViewportMessage({ type: 'PAN_VIEWPORT', dxCells: '1', dyCells: 0 }), false);
   assertErrorCode(
@@ -196,7 +291,14 @@ test('rejects an invalid PAN_VIEWPORT WebSocket payload', () => {
 });
 
 test('returns VIEWPORT_PANNED confirmation with metrics and diagnostics', () => {
-  const mock = createRoll20Mock();
+  const mock = createRoll20Mock({
+    pageAttributes: {
+      width: 73,
+      height: 41,
+      snapping_increment: 1.1428571428571428,
+    },
+    grid: { scaling: { x: 5110, y: -2870 } },
+  });
   const adapter = createTableViewAdapter(mock.windowObject);
 
   const confirmation = handlePanViewportMessage(
@@ -204,14 +306,12 @@ test('returns VIEWPORT_PANNED confirmation with metrics and diagnostics', () => 
     adapter,
   );
 
-  assert.deepEqual(confirmation, {
-    type: 'VIEWPORT_PANNED',
-    dxCells: 1,
-    dyCells: -1,
-    cellX: 70,
-    cellY: 70,
-    cameraPosition: { x: 10, y: 20, z: 30 },
-  });
+  assert.equal(confirmation.type, 'VIEWPORT_PANNED');
+  assert.equal(confirmation.dxCells, 1);
+  assert.equal(confirmation.dyCells, -1);
+  assert.ok(Math.abs(confirmation.cellX - 80) < 1e-9);
+  assert.ok(Math.abs(confirmation.cellY - 80) < 1e-9);
+  assert.deepEqual(confirmation.cameraPosition, { x: 10, y: 20, z: 30 });
 });
 
 test('readiness succeeds when engine.page becomes available after initialization', async () => {
